@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Don't Ask Bryan - AI Meteorologist</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        
+        html, body {
+            margin: 0;
+            padding: 0;
+            background: #060c1a;
+            font-family: system-ui, sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            overflow-x: hidden;
+            width: 100%;
+        }
+        
+        #root {
+            min-height: 100vh;
+            width: 100%;
+            max-width: 100vw;
+            overflow-x: hidden;
+        }
+        
+        /* Mobile-first responsive design */
+        @media (max-width: 768px) {
+            body {
+                font-size: 14px;
+            }
+            #root {
+                padding: 8px !important;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            body {
+                font-size: 12px;
+            }
+            #root {
+                padding: 4px !important;
+            }
+        }
+        
+        /* Touch-friendly interactions */
+        .mobile-touch {
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: rgba(0,255,136,0.2);
+        }
+        
+        /* Prevent horizontal overflow */
+        .no-scroll-x {
+            overflow-x: hidden;
+            width: 100%;
+        }
+        
+        /* Scrollbar styling for mobile */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0a1120;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1a2a4a;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        // Paste the JSX content here
+        const DontAskBryan = (function() {
+            const useState = React.useState;
+            const useEffect = React.useEffect;
+            const useCallback = React.useCallback;
+
+            // Constants
+            const LAT = 38.7253;
+            const LON = -90.4485;
+            const ZIP = "63043";
+            const CITY = "Maryland Heights, MO";
+
+            const METEO_URL =
+              `https://api.open-meteo.com/v1/forecast?latitude=${LAT}&longitude=${LON}` +
+              `&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,` +
+              `wind_direction_10m,wind_gusts_10m,surface_pressure,precipitation,weather_code,` +
+              `cloud_cover,visibility,dew_point_2m` +
+              `&hourly=cape,lifted_index,convective_inhibition,wind_speed_10m,wind_direction_10m,` +
+              `wind_speed_80m,wind_direction_80m,wind_speed_180m,wind_direction_180m,` +
+              `precipitation_probability,weather_code` +
+              `&wind_speed_unit=mph&temperature_unit=fahrenheit&precipitation_unit=inch` +
+              `&timezone=America%2FChicago&forecast_days=1`;
+
+            const NWS_ALERTS_URL = `https://api.weather.gov/alerts/active?point=${LAT},${LON}`;
+            const NWS_FORECAST_URL = `https://api.weather.gov/points/${LAT},${LON}`;
+
+            const WX_ICON = {
+              0:"\u2600\ufe0f",1:"\ud83c\udf24",2:"\u26c5",3:"\u2601\ufe0f",45:"\ud83c\udf2b",48:"\ud83c\udf2b",
+              51:"\ud83c\udf26",53:"\ud83c\udf26",55:"\ud83c\udf27",61:"\ud83c\udf27",63:"\ud83c\udf27",65:"\ud83c\udf27",
+              80:"\ud83c\udf26",81:"\ud83c\udf27",82:"\u26c8\ufe0f",95:"\u26c8\ufe0f",96:"\u26c8\ufe0f",99:"\u26c8\ufe0f",
+            };
+            const WX_LABEL = {
+              0:"Clear",1:"Mainly Clear",2:"Partly Cloudy",3:"Overcast",
+              45:"Fog",48:"Rime Fog",51:"Lt. Drizzle",53:"Drizzle",55:"Hvy Drizzle",
+              61:"Lt. Rain",63:"Moderate Rain",65:"Heavy Rain",
+              80:"Showers",81:"Heavy Showers",82:"Violent Showers",
+              95:"Thunderstorm",96:"T-Storm w/Hail",99:"Severe T-Storm",
+            };
+
+            // Vector math
+            const toRad = (d) => (d * Math.PI) / 180;
+            const windVec = (spd, dir) => ({ u: -spd * Math.sin(toRad(dir)), v: -spd * Math.cos(toRad(dir)) });
+            const mag = (u, v) => Math.sqrt(u * u + v * v);
+            const vecDir = (u, v) => { let d = Math.atan2(-u, -v) * (180 / Math.PI); return d < 0 ? d + 360 : d; };
+            const degToCompass = (d) => { if (d == null) return "--"; const D = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"]; return D[Math.round(d / 22.5) % 16]; };
+
+            // AI Tornado Analysis Engine
+            function runAnalysis(cur, hrly, idx, alertFeatures) {
+              if (!cur || !hrly) return null;
+
+              const cape = Math.max(0, hrly.cape?.[idx] ?? 0);
+              const li   = hrly.lifted_index?.[idx] ?? 0;
+              const cin  = hrly.convective_inhibition?.[idx] ?? 0;
+
+              // Multi-level wind profile
+              const ws10  = hrly.wind_speed_10m?.[idx]  ?? cur.wind_speed_10m  ?? 0;
+              const wd10  = hrly.wind_direction_10m?.[idx] ?? cur.wind_direction_10m ?? 0;
+              const ws80  = hrly.wind_speed_80m?.[idx]  ?? 0;
+              const wd80  = hrly.wind_direction_80m?.[idx] ?? 0;
+              const ws180 = hrly.wind_speed_180m?.[idx] ?? 0;
+              const wd180 = hrly.wind_direction_180m?.[idx] ?? 0;
+
+              const sfc  = windVec(ws10,  wd10);
+              const llj  = windVec(ws80,  wd80);
+              const mid  = windVec(ws180, wd180);
+
+              // Shear parameters
+              const llShear = mag(llj.u - sfc.u, llj.v - sfc.v);
+              const dlShear = mag(mid.u - sfc.u, mid.v - sfc.v);
+
+              // SRH proxy
+              const ddTurn = Math.abs(wd80 - wd10);
+              const turnAngle = ddTurn > 180 ? 360 - ddTurn : ddTurn;
+              const isCyclonic = (wd80 - wd10 + 360) % 360 < 180;
+              const srh = llShear * llShear * Math.sin(toRad(Math.min(turnAngle, 90))) * 2.8 * (isCyclonic ? 1 : 0.5);
+
+              // Significant Tornado Parameter (STP)
+              const capeComp  = Math.min(cape / 1500, 2.0);
+              const liComp    = Math.max(-li / 5, 0);
+              const shearComp = Math.min(dlShear / 35, 1.5);
+              const srhComp   = Math.max((srh - 25) / 100, 0);
+              const cinPenalty = cin < -50 ? 0.7 : cin < -100 ? 0.5 : 1.0;
+              const stp = capeComp * liComp * shearComp * (1 + srhComp * 0.5) * cinPenalty;
+
+              // EF-scale potential
+              let ef = "EF0";
+              if      (cape > 4000 && dlShear > 60) ef = "EF4-5";
+              else if (cape > 3000 && dlShear > 50) ef = "EF3+";
+              else if (cape > 2000 && dlShear > 40) ef = "EF2-3";
+              else if (cape > 1200 && dlShear > 30) ef = "EF1-2";
+              else if (cape > 500)                  ef = "EF0-1";
+
+              // NWS override
+              const hasTornadoWarning = alertFeatures.some(f =>
+                f.properties?.event?.toLowerCase().includes("tornado warning"));
+              const hasTornadoWatch = alertFeatures.some(f =>
+                f.properties?.event?.toLowerCase().includes("tornado watch"));
+              const hasSevereWarning = alertFeatures.some(f =>
+                f.properties?.event?.toLowerCase().includes("severe thunderstorm warning"));
+
+              // Risk level
+              let level, color, bgColor, action, prob;
+              let stpUsed = hasTornadoWarning ? Math.max(stp, 4) : (hasTornadoWatch ? Math.max(stp, 2) : stp);
+
+              if      (stpUsed >= 3.5) { level="EXTREME";  color="#ff2200"; bgColor="rgba(255,34,0,0.18)";   action="SEEK SHELTER IMMEDIATELY";  prob=Math.min(90, 55+stpUsed*5); }
+              else if (stpUsed >= 1.5) { level="HIGH";     color="#ff7700"; bgColor="rgba(255,119,0,0.13)";  action="PREPARE TO SHELTER";         prob=Math.min(55, 25+stpUsed*8); }
+              else if (stpUsed >= 0.8) { level="MODERATE"; color="#ffcc00"; bgColor="rgba(255,204,0,0.10)";  action="REMAIN ALERT";               prob=Math.min(25, 8+stpUsed*10); }
+              else if (stpUsed >= 0.3) { level="ELEVATED"; color="#ffff33"; bgColor="rgba(220,220,0,0.08)";  action="MONITOR CONDITIONS";         prob=Math.round(stpUsed*15); }
+              else                     { level="LOW";      color="#00dd66"; bgColor="rgba(0,210,90,0.08)";   action="NO IMMEDIATE THREAT";        prob=Math.round(Math.max(0,stpUsed*5)); }
+
+              // Bunkers Right-Mover Storm Motion Vector (Corrected)
+              // Mean wind (0-6 km mean) for supercell motion
+              const mn_u = (sfc.u + mid.u) / 2;
+              const mn_v = (sfc.v + mid.v) / 2;
+              const meanMag = mag(mn_u, mn_v) || 1;
+              
+              // Right-deviant motion for right-moving supercell in N. hemisphere
+              // When winds are from SW (220-250°), storms move NE (45-75°)
+              const DEV = 8; // mph deviation to the right of mean wind
+              
+              // Calculate perpendicular deviation (90° to the right of mean wind)
+              const perp_u = -mn_v / meanMag * DEV;
+              const perp_v = mn_u / meanMag * DEV;
+              
+              // Right-mover storm motion = mean wind + right deviation
+              const rm_u = mn_u + perp_u;
+              const rm_v = mn_v + perp_v;
+              
+              const stormSpd = Math.max(5, Math.round(mag(rm_u, rm_v)));
+              const stormDir = Math.round(vecDir(rm_u, rm_v));
+
+              // Meteorologist narrative
+              const narrative = buildNarrative(level, cape, li, cin, llShear, dlShear, srh, ef, stormSpd, stormDir, hasTornadoWarning, hasTornadoWatch);
+
+              return {
+                cape, li, cin, stp: stpUsed, llShear, dlShear, srh,
+                level, color, bgColor, action, probability: Math.round(prob),
+                ef, stormSpeed: stormSpd, stormDir, narrative,
+                hasTornadoWarning, hasTornadoWatch, hasSevereWarning,
+                ws10, wd10, ws80, wd80, ws180, wd180, isCyclonic,
+              };
+            }
+
+            function buildNarrative(level, cape, li, cin, llShear, dlShear, srh, ef, spd, dir, warn, watch) {
+              if (warn) return `\u26a0\ufe0f TORNADO WARNING IS ACTIVE. A confirmed tornado or radar-indicated rotation is occurring in St. Louis County. Take cover in the lowest floor of a sturdy building away from windows \u2014 NOW.`;
+              if (watch) return `\ud83d\udd36 TORNADO WATCH IN EFFECT. Conditions are favorable for tornado development. CAPE values of ${Math.round(cape)} J/kg combined with ${Math.round(dlShear)} mph deep-layer shear create a conducive environment. Stay informed and be prepared to act immediately.`;
+              if (level === "EXTREME") return `Extremely dangerous atmospheric setup. CAPE of ${Math.round(cape)} J/kg with deep shear of ${Math.round(dlShear)} mph and strong low-level rotation (SRH ~${Math.round(srh)} m\u00b2/s\u00b2) supports ${ef} tornado potential. Storm motion projected ${degToCompass(dir)} at ${spd} mph. Shelter now.`;
+              if (level === "HIGH") return `High tornado threat. Strong instability (CAPE ${Math.round(cape)} J/kg, LI ${li.toFixed(1)}) with ${Math.round(dlShear)} mph bulk shear. Low-level wind shear of ${Math.round(llShear)} mph supports supercell organization. Projected storm motion ${degToCompass(dir)} at ${spd} mph.`;
+              if (level === "MODERATE") return `Moderate risk environment. CAPE of ${Math.round(cape)} J/kg and ${Math.round(dlShear)} mph shear present marginal tornado ingredients. LI of ${li.toFixed(1)} indicates ${li < -2 ? "notable" : "limited"} instability. Monitor NWS for updates.`;
+              if (level === "ELEVATED") return `Elevated but non-significant setup. CAPE (${Math.round(cape)} J/kg) and shear (${Math.round(dlShear)} mph) are present but below severe thresholds. CIN of ${Math.round(cin)} J/kg is ${cin < -25 ? "limiting" : "minimal"}. Stay weather-aware.`;
+              return `Benign conditions for 63043. CAPE is ${Math.round(cape)} J/kg with ${Math.round(dlShear)} mph shear \u2014 insufficient for organized convection. No significant tornado threat at this time.`;
+            }
+
+            // SVG Path Prediction Map
+            function RadarMap({ analysis }) {
+              if (!analysis) return (
+                React.createElement('div', { style: { display:"flex", alignItems:"center", justifyContent:"center", height:"100%", color:"#334466" } },
+                  React.createElement('span', { style: { fontFamily:"monospace", fontSize:12 } }, "AWAITING DATA\u2026")
+                )
+              );
+
+              const { stormSpeed, stormDir, color, level } = analysis;
+              const sr = toRad(stormDir);
+              const PPD_LAT = 900;
+              const PPD_LON = 720;
+
+              const toX = (lon) => (lon - LON) * PPD_LON;
+              const toY = (lat) => -(lat - LAT) * PPD_LAT;
+
+              const dLat = (Math.cos(sr) * stormSpeed) / 69;
+              const dLon = (Math.sin(sr) * stormSpeed) / 55;
+
+              const HOURS = 2;
+              const STEPS = 24;
+              const pts = [];
+              for (let i = 0; i <= STEPS; i++) {
+                const t = (i / STEPS) * HOURS;
+                const cLat = LAT + dLat * t;
+                const cLon = LON + dLon * t;
+                const half = 0.018 + t * 0.035;
+                const perpLat = -dLon * half / (stormSpeed / 69 || 0.001);
+                const perpLon =  dLat * half / (stormSpeed / 55 || 0.001);
+                pts.push(`${toX(cLon - perpLon).toFixed(1)},${toY(cLat - perpLat).toFixed(1)}`);
+              }
+              for (let i = STEPS; i >= 0; i--) {
+                const t = (i / STEPS) * HOURS;
+                const cLat = LAT + dLat * t;
+                const cLon = LON + dLon * t;
+                const half = 0.018 + t * 0.035;
+                const perpLat = -dLon * half / (stormSpeed / 69 || 0.001);
+                const perpLon =  dLat * half / (stormSpeed / 55 || 0.001);
+                pts.push(`${toX(cLon + perpLon).toFixed(1)},${toY(cLat + perpLat).toFixed(1)}`);
+              }
+
+              const endLat = LAT + dLat * HOURS;
+              const endLon = LON + dLon * HOURS;
+              const midLat = LAT + dLat;
+              const midLon = LON + dLon;
+
+              const cities = [
+                { name:"63043 / Maryd Hts", lat:LAT, lon:LON, main:true },
+                { name:"St. Louis", lat:38.627, lon:-90.197 },
+                { name:"St. Charles", lat:38.788, lon:-90.496 },
+                { name:"Florissant", lat:38.789, lon:-90.322 },
+                { name:"Chesterfield", lat:38.663, lon:-90.577 },
+                { name:"O'Fallon", lat:38.811, lon:-90.700 },
+                { name:"Hazelwood", lat:38.771, lon:-90.371 },
+                { name:"Lambert Intl \u2708", lat:38.748, lon:-90.370 },
+                { name:"Ballwin", lat:38.595, lon:-90.547 },
+                { name:"Creve Coeur", lat:38.669, lon:-90.443 },
+              ];
+
+              const isExtreme = level === "EXTREME" || level === "HIGH";
+
+              return React.createElement('svg', { viewBox: "-280 -200 560 400", style: { width:"100%", height:"100%", background:"#04080f" } },
+                React.createElement('defs', null,
+                  React.createElement('marker', { id: "arw", markerWidth: 8, markerHeight: 6, refX: 7, refY: 3, orient: "auto" },
+                    React.createElement('polygon', { points: "0 0, 8 3, 0 6", fill: color })
+                  ),
+                  React.createElement('radialGradient', { id: "centerGlow", cx: "50%", cy: "50%", r: "50%" },
+                    React.createElement('stop', { offset: "0%", stopColor: "#00ff88", stopOpacity: 0.25 }),
+                    React.createElement('stop', { offset: "100%", stopColor: "#00ff88", stopOpacity: 0 })
+                  ),
+                  React.createElement('filter', { id: "glow" },
+                    React.createElement('feGaussianBlur', { stdDeviation: 2, result: "blur" }),
+                    React.createElement('feMerge', null,
+                      React.createElement('feMergeNode', { in: "blur" }),
+                      React.createElement('feMergeNode', { in: "SourceGraphic" })
+                    )
+                  )
+                ),
+                // Grid lines
+                ...[-0.3,-0.2,-0.1,0,0.1,0.2,0.3].map(d => 
+                  React.createElement('g', { key: d, opacity: 0.35 },
+                    React.createElement('line', { x1: toX(LON+d), y1: "-200", x2: toX(LON+d), y2: "200", stroke: "#102030", strokeWidth: 0.6 }),
+                    React.createElement('line', { x1: "-280", y1: toY(LAT+d), x2: "280", y2: toY(LAT+d), stroke: "#102030", strokeWidth: 0.6 })
+                  )
+                ),
+                // State boundary
+                React.createElement('polyline', { points: "248,-200 242,-150 252,-100 244,-40 258,30 255,80 260,150 252,200", stroke: "#1a3a5a", strokeWidth: 2.5, fill: "none", strokeDasharray: "6,3" }),
+                React.createElement('text', { x: 255, y: "-185", fill: "#1a3a5a", fontSize: 7, fontFamily: "monospace" }, "IL"),
+                React.createElement('text', { x: 220, y: "-185", fill: "#1a3a5a", fontSize: 7, fontFamily: "monospace" }, "MO"),
+                // Highways
+                React.createElement('path', { d: "M -80,-120 Q 0,-140 80,-110 Q 150,-80 160,0 Q 150,80 80,110 Q 0,130 -80,100", stroke: "#0d2035", strokeWidth: 1.5, fill: "none" }),
+                React.createElement('line', { x1: "-250", y1: toY(LAT+0.01), x2: "240", y2: toY(LAT+0.01), stroke: "#0d2035", strokeWidth: 1.5 }),
+                // Range rings
+                ...[60, 120, 180].map(r => 
+                  React.createElement('circle', { key: r, cx: toX(LON), cy: toY(LAT), r: r, fill: "none", stroke: "#0a1e30", strokeWidth: 0.8 })
+                ),
+                React.createElement('text', { x: toX(LON), y: toY(LAT) - 62, fill: "#0a2535", fontSize: 6, fontFamily: "monospace", textAnchor: "middle" }, "25mi"),
+                React.createElement('text', { x: toX(LON), y: toY(LAT) - 122, fill: "#0a2535", fontSize: 6, fontFamily: "monospace", textAnchor: "middle" }, "50mi"),
+                // Tornado path cone
+                React.createElement('polygon', { points: pts.join(" "), fill: `${color}28`, stroke: color, strokeWidth: 1.2, strokeDasharray: "5,3" }),
+                // Center line
+                React.createElement('line', { x1: toX(LON), y1: toY(LAT), x2: toX(endLon), y2: toY(endLat), stroke: color, strokeWidth: 2, strokeDasharray: "8,4", markerEnd: "url(#arw)" }),
+                // Hour markers
+                React.createElement('circle', { cx: toX(midLon), cy: toY(midLat), r: 5, fill: "#050a15", stroke: color, strokeWidth: 1.5 }),
+                React.createElement('text', { x: toX(midLon) + 8, y: toY(midLat) + 4, fill: color, fontSize: 7, fontFamily: "monospace" }, "+1HR"),
+                React.createElement('circle', { cx: toX(endLon), cy: toY(endLat), r: 5, fill: "#050a15", stroke: color, strokeWidth: 1.5 }),
+                React.createElement('text', { x: toX(endLon) + 8, y: toY(endLat) + 4, fill: color, fontSize: 7, fontFamily: "monospace" }, "+2HR"),
+                // Cities
+                ...cities.map(c => 
+                  React.createElement('g', { key: c.name, filter: c.main ? "url(#glow)" : undefined },
+                    c.main ? [
+                      React.createElement('circle', { cx: toX(c.lon), cy: toY(c.lat), r: 16, fill: "url(#centerGlow)" }),
+                      React.createElement('circle', { cx: toX(c.lon), cy: toY(c.lat), r: 6, fill: "#00ff88" }),
+                      React.createElement('circle', { cx: toX(c.lon), cy: toY(c.lat), r: 10, fill: "none", stroke: "#00ff88", strokeWidth: 1.5 })
+                    ] : [
+                      React.createElement('circle', { cx: toX(c.lon), cy: toY(c.lat), r: 3.5, fill: "#1a5570" })
+                    ],
+                    React.createElement('text', {
+                      x: toX(c.lon) + (c.main ? 14 : 7),
+                      y: toY(c.lat) + 4,
+                      fill: c.main ? "#00ff88" : "#2a6688",
+                      fontSize: c.main ? 8.5 : 7,
+                      fontFamily: "monospace",
+                      fontWeight: c.main ? "bold" : "normal"
+                    }, c.name)
+                  )
+                ),
+                // Labels
+                React.createElement('text', { x: "-265", y: "-175", fill: "#1a4060", fontSize: 7, fontFamily: "monospace" }, "ST. LOUIS COUNTY SECTOR"),
+                React.createElement('text', { x: "-265", y: "-163", fill: "#0e2a40", fontSize: 6.5, fontFamily: "monospace" }, "AI TORNADO TRACK \u2014 2HR PROJECTION"),
+                React.createElement('text', { x: "-265", y: "-151", fill: color, fontSize: 7.5, fontFamily: "monospace" }, `MOTION: ${degToCompass(stormDir)} @ ${stormSpeed} MPH`),
+                ...(isExtreme ? [
+                  React.createElement('text', { x: 0, y: 185, textAnchor: "middle", fill: "#ff2200", fontSize: 10, fontFamily: "monospace", fontWeight: "bold" }, "\u26a0 LIFE-THREATENING TORNADO RISK ZONE \u26a0")
+                ] : [])
+              );
+            }
+
+            // Metric Card
+            function Card({ label, value, unit, sub, color = "#c8d8f0", glow }) {
+              return React.createElement('div', {
+                style: {
+                  background:"#0a1120", border:`1px solid ${glow ? glow + "60" : "#1a2a4a"}`,
+                  borderRadius:8, padding:"12px 14px",
+                  boxShadow: glow ? `0 0 12px ${glow}22` : undefined,
+                }
+              },
+                React.createElement('div', { style: { color:"#3a5a7a", fontSize:10, fontFamily:"monospace", letterSpacing:1, marginBottom:4 } }, label),
+                React.createElement('div', { style: { color, fontFamily:"monospace", fontSize:22, fontWeight:"bold", lineHeight:1 } },
+                  React.createElement('span', null, value),
+                  React.createElement('span', { style: { fontSize:12, marginLeft:3, opacity:0.7 } }, unit)
+                ),
+                sub && React.createElement('div', { style: { color:"#3a5570", fontSize:10, fontFamily:"monospace", marginTop:4 } }, sub)
+              );
+            }
+
+            // Alert Badge
+            function AlertBadge({ alert }) {
+              const p = alert.properties;
+              const isTW  = p.event?.toLowerCase().includes("tornado warning");
+              const isTWa = p.event?.toLowerCase().includes("tornado watch");
+              const isST  = p.event?.toLowerCase().includes("severe");
+              const col   = isTW ? "#ff2200" : isTWa ? "#ff7700" : isST ? "#ffcc00" : "#4488cc";
+              return React.createElement('div', {
+                style: {
+                  border:`1px solid ${col}80`, borderLeft:`3px solid ${col}`,
+                  background:`${col}12`, borderRadius:6, padding:"10px 12px", marginBottom:8,
+                }
+              },
+                React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 } },
+                  React.createElement('span', { style: { color:col, fontFamily:"monospace", fontSize:11, fontWeight:"bold" } }, p.event?.toUpperCase()),
+                  React.createElement('span', { style: { color:"#3a5570", fontFamily:"monospace", fontSize:9 } },
+                    p.expires ? `EXP: ${new Date(p.expires).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}` : ""
+                  )
+                ),
+                React.createElement('div', { style: { color:"#6888aa", fontFamily:"monospace", fontSize:10, lineHeight:1.5 } },
+                  p.headline || p.description?.slice(0, 120) + "\u2026"
+                )
+              );
+            }
+
+            // Meter Bar
+            function MeterBar({ label, value, max, unit, color, warn, danger }) {
+              const pct = Math.min(100, (value / max) * 100);
+              const col = value >= danger ? "#ff4400" : value >= warn ? "#ffcc00" : color || "#00aaff";
+              return React.createElement('div', { style: { marginBottom:10 } },
+                React.createElement('div', { style: { display:"flex", justifyContent:"space-between", marginBottom:3 } },
+                  React.createElement('span', { style: { color:"#3a5570", fontFamily:"monospace", fontSize:10 } }, label),
+                  React.createElement('span', { style: { color:col, fontFamily:"monospace", fontSize:10, fontWeight:"bold" } },
+                    `${typeof value === "number" ? (value % 1 === 0 ? value : value.toFixed(1)) : "--"} ${unit}`
+                  )
+                ),
+                React.createElement('div', { style: { height:6, background:"#0d1828", borderRadius:3, overflow:"hidden" } },
+                  React.createElement('div', { style: { width:`${pct}%`, height:"100%", background:col, borderRadius:3, transition:"width 0.5s ease", boxShadow:`0 0 6px ${col}80` } })
+                )
+              );
+            }
+
+            // Hourly Row
+            function HourlyRow({ times, temps, precip, wxCodes }) {
+              if (!times) return null;
+              const now = new Date();
+              const isMobile = window.innerWidth <= 768;
+              const isSmallMobile = window.innerWidth <= 480;
+              const rows = [];
+              for (let i = 0; i < Math.min(12, times.length); i++) {
+                const t = new Date(times[i]);
+                if (t < now) continue;
+                rows.push(
+                  React.createElement('div', { key: i, style: {
+                    display:"flex", flexDirection:"column", alignItems:"center",
+                    background:"#0a1120", border:"1px solid #1a2a4a", borderRadius:6,
+                    padding: isSmallMobile ? "6px 4px" : "8px 6px", 
+                    minWidth: isSmallMobile ? 45 : 52,
+                    flexShrink: 0
+                  }},
+                    React.createElement('div', { style: { 
+                      color:"#3a5570", 
+                      fontSize: isSmallMobile ? 8 : 9, 
+                      fontFamily:"monospace" 
+                    } },
+                      t.toLocaleTimeString("en-US",{hour:"2-digit",hour12:true}).replace(" ","").toLowerCase()
+                    ),
+                    React.createElement('div', { style: { 
+                      fontSize: isSmallMobile ? 14 : 16, 
+                      margin:"4px 0" 
+                    } }, WX_ICON[wxCodes?.[i]] || "\ud83c\udf21"),
+                    React.createElement('div', { style: { 
+                      color:"#c8d8f0", 
+                      fontSize: isSmallMobile ? 10 : 11, 
+                      fontFamily:"monospace", 
+                      fontWeight:"bold" 
+                    } },
+                      temps?.[i] != null ? Math.round(temps[i]) + "\u00b0" : "--"
+                    ),
+                    React.createElement('div', { style: { 
+                      color:"#3a7aaa", 
+                      fontSize: isSmallMobile ? 8 : 9, 
+                      fontFamily:"monospace", 
+                      marginTop:2 
+                    } },
+                      precip?.[i] != null ? precip[i] + "%" : ""
+                    )
+                  )
+                );
+                if (rows.length >= (isMobile ? 6 : 9)) break;
+              }
+              return React.createElement('div', { 
+                style: { 
+                  display:"flex", 
+                  gap: isSmallMobile ? 3 : (isMobile ? 4 : 6), 
+                  overflowX: "auto", 
+                  paddingBottom:4,
+                  width: "100%",
+                  maxWidth: "100%",
+                  WebkitOverflowScrolling: "touch"
+                } 
+              }, ...rows);
+            }
+
+            // Main App
+            return function DontAskBryan() {
+              const [wx, setWx] = useState(null);
+              const [hrly, setHrly] = useState(null);
+              const [alerts, setAlerts] = useState([]);
+              const [analysis, setAna] = useState(null);
+              const [updated, setUpd] = useState(null);
+              const [loading, setLoad] = useState(true);
+              const [error, setErr] = useState(null);
+              const [pulse, setPulse] = useState(false);
+              const [nwsDesc, setNwsDesc] = useState("");
+
+              const fetchAll = useCallback(async () => {
+                setLoad(true);
+                try {
+                  const [meteoRes, alertRes] = await Promise.allSettled([
+                    fetch(METEO_URL).then(r => r.json()),
+                    fetch(NWS_ALERTS_URL).then(r => r.json()),
+                  ]);
+
+                  let meteo = null, alertFeatures = [];
+
+                  if (meteoRes.status === "fulfilled") {
+                    meteo = meteoRes.value;
+                    setWx(meteo.current);
+                    setHrly(meteo.hourly);
+                  }
+                  if (alertRes.status === "fulfilled") {
+                    alertFeatures = alertRes.value.features || [];
+                    setAlerts(alertFeatures);
+                  }
+
+                  if (meteo) {
+                    const now = new Date();
+                    const times = meteo.hourly?.time || [];
+                    let idx = times.findLastIndex(t => new Date(t) <= now);
+                    if (idx < 0) idx = 0;
+
+                    const result = runAnalysis(meteo.current, meteo.hourly, idx, alertFeatures);
+                    setAna(result);
+                    setPulse(result?.level === "EXTREME" || result?.level === "HIGH");
+                  }
+
+                  setUpd(new Date());
+                  setErr(null);
+                } catch (e) {
+                  setErr("Data fetch error: " + e.message);
+                } finally {
+                  setLoad(false);
+                }
+              }, []);
+
+              useEffect(() => {
+                fetchAll();
+                const iv = setInterval(fetchAll, 5 * 60 * 1000);
+                return () => clearInterval(iv);
+              }, [fetchAll]);
+
+              useEffect(() => {
+                if (!pulse) return;
+                const iv = setInterval(() => setPulse(p => !p), 800);
+                return () => clearInterval(iv);
+              }, [analysis?.level]);
+
+              const bg = "#060c1a";
+              const card = "#0a1120";
+              const border = "#152038";
+              const threatColor = analysis?.color || "#00dd66";
+
+              const isPulsing = analysis?.level === "EXTREME" || analysis?.level === "HIGH";
+              const activeTornadoAlert = analysis?.hasTornadoWarning;
+
+              return React.createElement('div', {
+                className: "mobile-touch no-scroll-x",
+                style: {
+                  background: bg, minHeight:"100vh", color:"#c8d8f0",
+                  fontFamily:"system-ui, sans-serif", 
+                  padding: isSmallMobile ? "4px" : (isMobile ? "8px" : "16px"),
+                  maxWidth: isMobile ? "100%" : "1280", 
+                  margin: "0 auto",
+                  width: "100%",
+                  overflowX: "hidden"
+                }
+              },
+                // Header
+                React.createElement('div', {
+                  style: {
+                    background: activeTornadoAlert
+                      ? "linear-gradient(135deg,#2a0000,#1a0505)"
+                      : "linear-gradient(135deg,#08102a,#060c1a)",
+                    border:`1px solid ${activeTornadoAlert ? "#ff220060" : "#1a3060"}`,
+                    borderRadius:12, padding:"16px 20px", marginBottom:16,
+                    boxShadow: activeTornadoAlert ? "0 0 30px rgba(255,34,0,0.25)" : undefined,
+                    display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:12,
+                  }
+                },
+                  React.createElement('div', null,
+                    React.createElement('div', {
+                      style: {
+                        fontFamily:"monospace", fontSize:22, fontWeight:"bold",
+                        color: activeTornadoAlert ? "#ff4422" : "#00ff88",
+                        letterSpacing:1, textShadow:`0 0 20px ${activeTornadoAlert ? "#ff2200" : "#00ff88"}50`,
+                      }
+                    }, "\ud83c\udf2a DON'T ASK BRYAN \u2014 ASK ME"),
+                    React.createElement('div', { style: { color:"#2a5a8a", fontFamily:"monospace", fontSize:11, marginTop:3 } },
+                      `AI METEOROLOGIST \u2022 ZIP ${ZIP} \u2014 ${CITY} \u2022 ST. LOUIS COUNTY SECTOR`)
+                  ),
+                  React.createElement('div', { style: { textAlign:"right" } },
+                    React.createElement('div', { style: { color:"#1a4060", fontFamily:"monospace", fontSize:10 } },
+                      updated ? `UPDATED: ${updated.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}` : "CONNECTING\u2026"
+                    ),
+                    React.createElement('div', { style: { color:"#0e3050", fontFamily:"monospace", fontSize:9, marginTop:2 } },
+                      "AUTO-REFRESH EVERY 5 MIN \u2022 OPEN-METEO + NWS/NOAA"
+                    ),
+                    React.createElement('button', { onClick: fetchAll, style: {
+                      marginTop:6, background:"#0a1830", border:"1px solid #1a3a6a",
+                      color:"#2a6aaa", borderRadius:4, padding:"3px 10px",
+                      fontFamily:"monospace", fontSize:10, cursor:"pointer",
+                    } }, "\u21bb REFRESH")
+                  )
+                ),
+                error && React.createElement('div', { style: { background:"#1a0808", border:"1px solid #882222", borderRadius:8, padding:"10px 14px", marginBottom:14, color:"#cc5555", fontFamily:"monospace", fontSize:11 } },
+                  `\u26a0 ${error}`
+                ),
+                // Threat Level Banner
+                React.createElement('div', {
+                  style: {
+                    background: analysis ? `linear-gradient(90deg,${analysis.bgColor},${bg})` : card,
+                    border:`2px solid ${threatColor}55`, borderRadius:10, padding:"14px 20px",
+                    marginBottom:16, display:"flex", alignItems:"center", justifyContent:"space-between",
+                    flexWrap:"wrap", gap:12,
+                    boxShadow: isPulsing ? `0 0 24px ${threatColor}30` : undefined,
+                  }
+                },
+                  React.createElement('div', { style: { display:"flex", alignItems:"center", gap:16 } },
+                    React.createElement('div', null,
+                      React.createElement('div', { style: { color:"#2a4a6a", fontFamily:"monospace", fontSize:10, letterSpacing:1 } }, "AI TORNADO THREAT LEVEL"),
+                      React.createElement('div', {
+                        style: {
+                          color: threatColor, fontFamily:"monospace", fontSize:32, fontWeight:"bold",
+                          letterSpacing:3, textShadow:`0 0 20px ${threatColor}60`,
+                          lineHeight:1.1,
+                        }
+                      }, loading ? "ANALYZING\u2026" : (analysis?.level || "\u2014")),
+                      React.createElement('div', { style: { color: threatColor, fontFamily:"monospace", fontSize:11, marginTop:2, opacity:0.8 } },
+                        analysis?.action || ""
+                      )
+                    ),
+                    analysis && React.createElement('div', { style: { borderLeft:`1px solid ${threatColor}30`, paddingLeft:16 } },
+                      React.createElement('div', { style: { color:"#2a4a6a", fontFamily:"monospace", fontSize:9 } }, "TORNADO PROB"),
+                      React.createElement('div', { style: { color: threatColor, fontFamily:"monospace", fontSize:24, fontWeight:"bold" } },
+                        React.createElement('span', null, analysis.probability),
+                        React.createElement('span', { style: { fontSize:13 } }, "%")
+                      ),
+                      React.createElement('div', { style: { color:"#2a4a6a", fontFamily:"monospace", fontSize:9 } }, `STP: ${analysis.stp.toFixed(2)}`)
+                    )
+                  ),
+                  analysis && React.createElement('div', {
+                    style: {
+                      background:"#060c18", border:`1px solid ${threatColor}40`,
+                      borderRadius:8, padding:"10px 14px", maxWidth:520,
+                    }
+                  },
+                    React.createElement('div', { style: { color:"#2a4a6a", fontFamily:"monospace", fontSize:9, marginBottom:5 } }, "AI METEOROLOGIST ASSESSMENT"),
+                    React.createElement('div', { style: { color:"#8aabb8", fontFamily:"monospace", fontSize:10.5, lineHeight:1.6 } },
+                      analysis.narrative
+                    )
+                  )
+                ),
+                // Row 1: Current Conditions + NWS Alerts
+                React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 } },
+                  // Current Conditions
+                  React.createElement('div', { style: { background:card, border:`1px solid ${border}`, borderRadius:10, padding:14 } },
+                    React.createElement('div', { style: { color:"#1a4060", fontFamily:"monospace", fontSize:10, letterSpacing:1, marginBottom:10 } },
+                      `CURRENT CONDITIONS \u2014 ${ZIP} \u2022 ${wx ? WX_LABEL[wx.weather_code] || "\u2014" : "\u2014"} ${WX_ICON[wx?.weather_code] || ""}`
+                    ),
+                    React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 } },
+                      React.createElement(Card, { label:"TEMPERATURE", value: wx?.temperature_2m != null ? Math.round(wx.temperature_2m) : "--", unit:"\u00b0F", sub:`Feels like ${wx?.apparent_temperature != null ? Math.round(wx.apparent_temperature) : "--"}\u00b0F`, color:"#ff9944" }),
+                      React.createElement(Card, { label:"DEW POINT", value: wx?.dew_point_2m != null ? Math.round(wx.dew_point_2m) : "--", unit:"\u00b0F", sub:`RH ${wx?.relative_humidity_2m ?? "--"}%`, color:"#44bbff" }),
+                      React.createElement(Card, { label:"WIND", value: wx?.wind_speed_10m != null ? Math.round(wx.wind_speed_10m) : "--", unit:"mph",
+                        sub: `Gusts ${wx?.wind_gusts_10m != null ? Math.round(wx.wind_gusts_10m) : "--"} mph \u2022 ${degToCompass(wx?.wind_direction_10m)}`,
+                        color:"#88ddff", glow: wx?.wind_gusts_10m > 40 ? "#88ddff" : undefined }),
+                      React.createElement(Card, { label:"PRESSURE", value: wx?.surface_pressure != null ? (wx.surface_pressure / 33.8639).toFixed(2) : "--", unit:"inHg",
+                        sub: wx?.surface_pressure != null ? (wx.surface_pressure < 990 ? "\u2b07 FALLING \u2014 STORM RISK" : "Steady") : "",
+                        color: wx?.surface_pressure < 990 ? "#ff8844" : "#aabbcc" }),
+                      React.createElement(Card, { label:"PRECIPITATION", value: wx?.precipitation != null ? wx.precipitation.toFixed(2) : "--", unit:"in", sub:"Last hour", color:"#44aaff" }),
+                      React.createElement(Card, { label:"CLOUD COVER", value: wx?.cloud_cover != null ? wx.cloud_cover : "--", unit:"%", sub: wx?.visibility != null ? `Vis: ${(wx.visibility / 1609).toFixed(1)} mi` : "", color:"#6688aa" })
+                    )
+                  ),
+                  // NWS Alerts
+                  React.createElement('div', { style: { background:card, border:`1px solid ${border}`, borderRadius:10, padding:14 } },
+                    React.createElement('div', { style: { color:"#1a4060", fontFamily:"monospace", fontSize:10, letterSpacing:1, marginBottom:10, display:"flex", justifyContent:"space-between" } },
+                      React.createElement('span', null, "NWS ACTIVE ALERTS \u2014 ST. LOUIS COUNTY"),
+                      alerts.length > 0 && React.createElement('span', { style: { color:"#ff7700", fontWeight:"bold" } }, `${alerts.length} ACTIVE`)
+                    ),
+                    React.createElement('div', { style: { maxHeight:260, overflowY:"auto" } },
+                      loading ? 
+                        React.createElement('div', { style: { color:"#1a3a5a", fontFamily:"monospace", fontSize:11, padding:20, textAlign:"center" } }, "FETCHING NWS DATA\u2026") :
+                      alerts.length === 0 ?
+                        React.createElement('div', { style: { background:"#05100a", border:"1px solid #0d3020", borderRadius:8, padding:"14px 16px", textAlign:"center" } },
+                          React.createElement('div', { style: { color:"#00dd66", fontFamily:"monospace", fontSize:16, marginBottom:6 } }, "\u2713 ALL CLEAR"),
+                          React.createElement('div', { style: { color:"#1a4a30", fontFamily:"monospace", fontSize:10 } }, "No NWS active alerts for St. Louis County at this time.")
+                        ) :
+                      alerts.map((a, i) => React.createElement(AlertBadge, { key: i, alert: a }))
+                    ),
+                    React.createElement('div', { style: { marginTop:10, color:"#0e2535", fontFamily:"monospace", fontSize:9 } }, "Source: api.weather.gov/alerts \u2014 Updates every 5 min")
+                  )
+                ),
+                // Row 2: AI Tornado Analysis + Radar Path Map
+                React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:14, marginBottom:14 } },
+                  // AI Analysis
+                  React.createElement('div', { style: { background:card, border:`1px solid ${border}`, borderRadius:10, padding:14 } },
+                    React.createElement('div', { style: { color:"#1a4060", fontFamily:"monospace", fontSize:10, letterSpacing:1, marginBottom:12 } }, "AI TORNADO ANALYSIS \u2014 SENIOR METEOROLOGIST METHODS"),
+                    React.createElement(MeterBar, { label:"CAPE (Convective Energy)", value: analysis?.cape ?? 0, max: 5000, unit:"J/kg", color:"#ff6600", warn: 2000, danger: 3500 }),
+                    React.createElement(MeterBar, { label:"Lifted Index", value: analysis?.li ?? 0, max: 8, unit:"", color:"#00aaff", warn: -4, danger: -7 }),
+                    React.createElement(MeterBar, { label:"CIN (Convective Inhibition)", value: analysis?.cin ?? 0, max: 200, unit:"J/kg", color:"#ffaa00", warn: -25, danger: -75 }),
+                    React.createElement(MeterBar, { label:"0-1km Shear", value: analysis?.llShear ?? 0, max: 50, unit:"mph", color:"#00ddaa", warn: 15, danger: 25 }),
+                    React.createElement(MeterBar, { label:"0-3km Shear", value: analysis?.dlShear ?? 0, max: 70, unit:"mph", color:"#00aaff", warn: 30, danger: 45 }),
+                    React.createElement(MeterBar, { label:"SRH (Storm Relative Helicity)", value: analysis?.srh ?? 0, max: 400, unit:"m\u00b2/s\u00b2", color:"#ff00aa", warn: 150, danger: 250 }),
+                    React.createElement('div', { style: { marginTop:12, padding:10, background:"#060812", border:"1px solid #1a2a4a", borderRadius:6 } },
+                      React.createElement('div', { style: { color:"#2a4a6a", fontFamily:"monospace", fontSize:9, marginBottom:4 } }, "ENVIRONMENTAL SUMMARY"),
+                      React.createElement('div', { style: { color:"#6a8aaa", fontFamily:"monospace", fontSize:10, lineHeight:1.5 } },
+                        analysis ? `STP: ${analysis.stp.toFixed(2)} \u2022 EF-Scale Potential: ${analysis.ef} \u2022 Storm Motion: ${degToCompass(analysis.stormDir)} @ ${analysis.stormSpeed} mph` : "Analyzing atmospheric conditions..."
+                      )
+                    )
+                  ),
+                  // Radar Path Map
+                  React.createElement('div', { style: { background:card, border:`1px solid ${border}`, borderRadius:10, padding:14, height:400 } },
+                    React.createElement('div', { style: { color:"#1a4060", fontFamily:"monospace", fontSize:10, letterSpacing:1, marginBottom:10 } }, "TORNADO PATH PROJECTION \u2014 2 HOUR FORECAST"),
+                    React.createElement(RadarMap, { analysis })
+                  )
+                ),
+                // Hourly Forecast
+                React.createElement('div', { style: { background:card, border:`1px solid ${border}`, borderRadius:10, padding:14 } },
+                  React.createElement('div', { style: { color:"#1a4060", fontFamily:"monospace", fontSize:10, letterSpacing:1, marginBottom:10 } }, "HOURLY FORECAST \u2014 NEXT 9 HOURS"),
+                  React.createElement(HourlyRow, { times: hrly?.time, temps: hrly?.temperature_2m, precip: hrly?.precipitation_probability, wxCodes: hrly?.weather_code })
+                )
+              );
+            };
+        })();
+
+        // Render the app
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(React.createElement(DontAskBryan));
+    </script>
+</body>
+</html>
