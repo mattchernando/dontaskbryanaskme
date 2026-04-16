@@ -132,13 +132,24 @@
               else if (stpUsed >= 0.3) { level="ELEVATED"; color="#ffff33"; bgColor="rgba(220,220,0,0.08)";  action="MONITOR CONDITIONS";         prob=Math.round(stpUsed*15); }
               else                     { level="LOW";      color="#00dd66"; bgColor="rgba(0,210,90,0.08)";   action="NO IMMEDIATE THREAT";        prob=Math.round(Math.max(0,stpUsed*5)); }
 
-              // Bunkers Right-Mover Storm Motion Vector
+              // Bunkers Right-Mover Storm Motion Vector (Corrected)
+              // Mean wind (0-6 km mean) for supercell motion
               const mn_u = (sfc.u + mid.u) / 2;
               const mn_v = (sfc.v + mid.v) / 2;
               const meanMag = mag(mn_u, mn_v) || 1;
-              const DEV = 8;
-              const rm_u = mn_u + (mn_v / meanMag) * DEV;
-              const rm_v = mn_v - (mn_u / meanMag) * DEV;
+              
+              // Right-deviant motion for right-moving supercell in N. hemisphere
+              // When winds are from SW (220-250°), storms move NE (45-75°)
+              const DEV = 8; // mph deviation to the right of mean wind
+              
+              // Calculate perpendicular deviation (90° to the right of mean wind)
+              const perp_u = -mn_v / meanMag * DEV;
+              const perp_v = mn_u / meanMag * DEV;
+              
+              // Right-mover storm motion = mean wind + right deviation
+              const rm_u = mn_u + perp_u;
+              const rm_v = mn_v + perp_v;
+              
               const stormSpd = Math.max(5, Math.round(mag(rm_u, rm_v)));
               const stormDir = Math.round(vecDir(rm_u, rm_v));
 
