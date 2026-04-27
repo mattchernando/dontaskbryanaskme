@@ -283,33 +283,68 @@ async def force_refresh() -> dict:
     return {"status": "ok", "message": "All caches cleared. Next tool calls will fetch fresh data."}
 
 
+# ── ASGI middleware: rewrite Host header to localhost ────────────────────────
+# MCP v1.6+ added DNS-rebinding protection that returns HTTP 421 "Invalid Host
+# header" when the request's Host header isn't on a hardcoded localhost
+# allowlist. That breaks LAN deployments where Claude Desktop reaches the Pi
+# at e.g. juniper.local:8765. We wrap the app and rewrite Host -> localhost
+# *before* the protection check sees it. This is safe in our LAN-only,
+# trusted-network deployment scenario; do NOT do this on a public-internet box.
+
+class RewriteHostMiddleware:
+    """Rewrites the HTTP Host header to 'localhost' for every request.
+
+    Required because MCP's SSE transport blocks any non-localhost Host as a
+    DNS-rebinding precaution, but our intended audience is a single Claude
+    Desktop on the same LAN as the Pi.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            new_headers = []
+            host_replaced = False
+            for name, value in scope.get("headers", []):
+                if name == b"host":
+                    new_headers.append((b"host", b"localhost"))
+                    host_replaced = True
+                else:
+                    new_headers.append((name, value))
+            if not host_replaced:
+                new_headers.append((b"host", b"localhost"))
+            scope = {**scope, "headers": new_headers}
+        await self.app(scope, receive, send)
+
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 def main() -> None:
-    """Run the server with SSE transport, configured for LAN access.
+    """Run the server with SSE transport over LAN.
 
-    We bypass FastMCP's high-level `mcp.run("sse")` because it uses uvicorn's
-    default config, which rejects requests whose Host header doesn't match the
-    bound interface — that breaks LAN access from a client like Claude Desktop
-    on a different machine. We mount the same app manually with permissive
-    settings.
+    Bypasses FastMCP's mcp.run("sse") because:
+    1. MCP's bundled SSE app has DNS-rebinding protection that rejects LAN Host
+       headers (returns 421 "Invalid Host header"). We wrap it with a Host-
+       rewriting middleware to bypass that.
+    2. uvicorn's default httptools parser also has strict Host-header behavior
+       in some versions — we use the h11 parser which is more permissive.
     """
     import asyncio
     import uvicorn
 
+    # Build the SSE app and wrap it with the Host-rewriting middleware
     starlette_app = mcp.sse_app()
+    app = RewriteHostMiddleware(starlette_app)
 
     print(f"[dontaskbryan-mcp] Starting on http://{HOST}:{PORT} (SSE transport)")
     print(f"[dontaskbryan-mcp] Connect Claude Desktop with URL: http://<pi-host>:{PORT}/sse")
 
     config = uvicorn.Config(
-        starlette_app,
+        app,
         host=HOST,
         port=PORT,
         log_level="info",
-        # Use h11 parser — uvicorn's default httptools parser issues a spurious
-        # HTTP 421 "Invalid Host header" when bound to 0.0.0.0 and reached over
-        # LAN by hostname (e.g., juniper.local:8765). h11 doesn't do that check.
         http="h11",
         forwarded_allow_ips="*",
         proxy_headers=True,
