@@ -283,59 +283,61 @@ async def force_refresh() -> dict:
     return {"status": "ok", "message": "All caches cleared. Next tool calls will fetch fresh data."}
 
 
-# ── ASGI middleware: rewrite Host header to localhost ────────────────────────
-# MCP v1.6+ added DNS-rebinding protection that returns HTTP 421 "Invalid Host
-# header" when the request's Host header isn't on a hardcoded localhost
-# allowlist. That breaks LAN deployments where Claude Desktop reaches the Pi
-# at e.g. juniper.local:8765. We wrap the app and rewrite Host -> localhost
-# *before* the protection check sees it. This is safe in our LAN-only,
-# trusted-network deployment scenario; do NOT do this on a public-internet box.
-
-class RewriteHostMiddleware:
-    """Rewrites the HTTP Host header to 'localhost' for every request.
-
-    Required because MCP's SSE transport blocks any non-localhost Host as a
-    DNS-rebinding precaution, but our intended audience is a single Claude
-    Desktop on the same LAN as the Pi.
-    """
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope.get("type") == "http":
-            new_headers = []
-            host_replaced = False
-            for name, value in scope.get("headers", []):
-                if name == b"host":
-                    new_headers.append((b"host", b"localhost"))
-                    host_replaced = True
-                else:
-                    new_headers.append((name, value))
-            if not host_replaced:
-                new_headers.append((b"host", b"localhost"))
-            scope = {**scope, "headers": new_headers}
-        await self.app(scope, receive, send)
-
-
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 def main() -> None:
     """Run the server with SSE transport over LAN.
 
-    Bypasses FastMCP's mcp.run("sse") because:
-    1. MCP's bundled SSE app has DNS-rebinding protection that rejects LAN Host
-       headers (returns 421 "Invalid Host header"). We wrap it with a Host-
-       rewriting middleware to bypass that.
-    2. uvicorn's default httptools parser also has strict Host-header behavior
-       in some versions — we use the h11 parser which is more permissive.
+    Why we bypass FastMCP's `mcp.run("sse")`:
+    MCP v1.x ships TransportSecurityMiddleware (mcp/server/transport_security.py)
+    which performs DNS-rebinding protection by checking the Host header against
+    a hardcoded allowlist (defaults to localhost only). That returns HTTP 421
+    "Invalid Host header" for any LAN client like Claude Desktop on a different
+    machine. The setting is exposed as `TransportSecuritySettings(enable_dns_
+    rebinding_protection=False)` but FastMCP's `mcp.sse_app()` doesn't surface
+    it. So we build the Starlette app manually, instantiating
+    `SseServerTransport` with the protection explicitly disabled.
+
+    Safe in our LAN-only deployment where the Pi is behind a home router and
+    only Claude Desktop on the same network can reach it. If this server were
+    ever exposed to the public internet, switch back to the strict default.
     """
     import asyncio
     import uvicorn
+    from starlette.applications import Starlette
+    from starlette.routing import Route, Mount
+    from mcp.server.sse import SseServerTransport
+    from mcp.server.transport_security import TransportSecuritySettings
 
-    # Build the SSE app and wrap it with the Host-rewriting middleware
-    starlette_app = mcp.sse_app()
-    app = RewriteHostMiddleware(starlette_app)
+    # Disable DNS-rebinding protection — see docstring above for justification.
+    security_settings = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    try:
+        sse = SseServerTransport("/messages/", security_settings=security_settings)
+    except TypeError:
+        # Older MCP versions: parameter not exposed on the constructor.
+        sse = SseServerTransport("/messages/")
+        # Best-effort monkey-patch any internal middleware reference.
+        if hasattr(sse, "_security_settings"):
+            sse._security_settings = security_settings
+        if hasattr(sse, "_security"):
+            sse._security.settings = security_settings
+
+    async def handle_sse(request):
+        async with sse.connect_sse(
+            request.scope, request.receive, request._send
+        ) as (read_stream, write_stream):
+            await mcp._mcp_server.run(
+                read_stream,
+                write_stream,
+                mcp._mcp_server.create_initialization_options(),
+            )
+
+    app = Starlette(
+        routes=[
+            Route("/sse", endpoint=handle_sse),
+            Mount("/messages/", app=sse.handle_post_message),
+        ]
+    )
 
     print(f"[dontaskbryan-mcp] Starting on http://{HOST}:{PORT} (SSE transport)")
     print(f"[dontaskbryan-mcp] Connect Claude Desktop with URL: http://<pi-host>:{PORT}/sse")
@@ -345,7 +347,6 @@ def main() -> None:
         host=HOST,
         port=PORT,
         log_level="info",
-        http="h11",
         forwarded_allow_ips="*",
         proxy_headers=True,
     )
