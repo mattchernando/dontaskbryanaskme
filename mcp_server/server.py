@@ -307,8 +307,10 @@ def main() -> None:
         host=HOST,
         port=PORT,
         log_level="info",
-        # Allow proxy / LAN clients to set Host headers — uvicorn's default rejects
-        # them with 421 Misdirected Request, which breaks remote Claude Desktop access.
+        # Use h11 parser — uvicorn's default httptools parser issues a spurious
+        # HTTP 421 "Invalid Host header" when bound to 0.0.0.0 and reached over
+        # LAN by hostname (e.g., juniper.local:8765). h11 doesn't do that check.
+        http="h11",
         forwarded_allow_ips="*",
         proxy_headers=True,
     )
