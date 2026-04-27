@@ -293,6 +293,53 @@ function analyze(cur, hrly, idx, alertFeatures) {
   return {cape,li,cin,stp:su,llShear,dlShear,srh,ef,lv,col,bg,act,prob:Math.round(prob),note,stSpd,stDir,hasTW,hasTWa,hasSW,ws10,wd10,ws80,wd80,ws180,wd180,cyclonic};
 }
 
+// ── Threat-tier ranking + plain-English peak time formatting ─────────────────
+const THREAT_TIER = { LOW:0, ELEVATED:1, MODERATE:2, HIGH:3, EXTREME:4 };
+const tierOf = lv => THREAT_TIER[lv] ?? 0;
+function formatPeakTime(date) {
+  if (!date) return "";
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+  const hour = date.toLocaleTimeString("en-US", { hour: "numeric", hour12: true });
+  return isToday ? hour : date.toLocaleDateString("en-US", { weekday: "short" }) + " " + hour;
+}
+
+// ── Forecast-aware analysis ──────────────────────────────────────────────────
+// Runs analyze() on every forecast hour and returns { current, peak, peakTime, peakIdx, hIdx }.
+// peak/peakTime are null when the worst hour IS the current hour.
+function analyzeForecast(cur, hrly, alertFeatures) {
+  if (!hrly || !hrly.time || !hrly.time.length) return null;
+  const hIdx = findCurrentHourIdx(hrly.time);
+  const current = analyze(cur, hrly, hIdx, alertFeatures);
+  if (!current) return null;
+
+  let peakIdx = hIdx;
+  let peakScore = current.stp;
+  for (let i = hIdx + 1; i < hrly.time.length; i++) {
+    const fa = analyze(cur, hrly, i, alertFeatures);
+    if (fa && fa.stp > peakScore) {
+      peakScore = fa.stp;
+      peakIdx = i;
+    }
+  }
+
+  if (peakIdx === hIdx) return { current, peak: null, peakTime: null, peakIdx, hIdx };
+  const peak = analyze(cur, hrly, peakIdx, alertFeatures);
+  const peakTime = new Date(hrly.time[peakIdx]);
+  return { current, peak, peakTime, peakIdx, hIdx };
+}
+
+// Build the AI assessment string. If a meaningful upgrade is forecast later, append a forward-looking sentence.
+function buildAssessment(current, peak, peakTime) {
+  if (!current) return "";
+  let s = current.note;
+  if (peak && peakTime && tierOf(peak.lv) > tierOf(current.lv)) {
+    const t = formatPeakTime(peakTime);
+    s += ` Conditions ramp up by ${t}: ${peak.lv} risk projected — CAPE ${Math.round(peak.cape)} J/kg, ${Math.round(peak.dlShear)} mph shear, ${peak.prob}% tornado probability.`;
+  }
+  return s;
+}
+
 // ── Cities in path ───────────────────────────────────────────────────────────
 function citiesInPath(a) {
   if (!a || a.stSpd < 1) return [];
@@ -597,11 +644,20 @@ function App() {
   const isMob = width < 680;
   const isSm  = width < 440;
 
-  // Compute analysis from current state
-  const hIdx   = hrly ? findCurrentHourIdx(hrly.time || []) : 0;
-  const a      = analyze(wx, hrly, hIdx, aAlerts);
-  const impact = a ? citiesInPath(a) : [];
-  const col    = a ? a.col : "#00dd66";
+  // Compute analysis from current state — including forward scan for peak threat hour today
+  const hIdx       = hrly ? findCurrentHourIdx(hrly.time || []) : 0;
+  const fc         = analyzeForecast(wx, hrly, aAlerts);
+  const a          = fc?.current;
+  const peak       = fc?.peak;
+  const peakTime   = fc?.peakTime;
+  const impact     = a ? citiesInPath(a) : [];
+  const col        = a ? a.col : "#00dd66";
+  // Banner styling: when peak today is worse than now, paint the border with the peak's color
+  // so a "LOW now / HIGH later" situation reads as orange at a glance instead of green.
+  const showPeak   = !!(peak && peakTime && a && tierOf(peak.lv) > tierOf(a.lv));
+  const bannerCol  = showPeak ? peak.col : col;
+  const bannerBg   = a ? (showPeak ? peak.bg : a.bg) : "rgba(0,0,0,0)";
+  const assessment = a ? buildAssessment(a, peak, peakTime) : "";
 
   const fetchAll = useCallback(async () => {
     setLoad(true);
@@ -707,19 +763,32 @@ function App() {
 
       {/* THREAT BANNER */}
       {a && (
-        <div style={{background:`linear-gradient(90deg,${a.bg},#060c1a)`,border:`2px solid ${col}50`,
+        <div style={{background:`linear-gradient(90deg,${bannerBg},#060c1a)`,border:`2px solid ${bannerCol}50`,
           borderRadius:8,padding:isMob?"10px 12px":"12px 16px",marginBottom:8,
-          boxShadow:`0 0 16px ${col}20`}}>
+          boxShadow:`0 0 16px ${bannerCol}20`}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
-            <div style={{display:"flex",alignItems:"center",gap:14}}>
+            <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+              {/* NOW */}
               <div>
-                <div style={{color:"#1a4060",fontFamily:"monospace",fontSize:9,letterSpacing:1}}>AI TORNADO THREAT</div>
+                <div style={{color:"#1a4060",fontFamily:"monospace",fontSize:9,letterSpacing:1}}>{showPeak ? "RIGHT NOW" : "AI TORNADO THREAT"}</div>
                 <div style={{color:col,fontFamily:"monospace",fontSize:isMob?22:28,fontWeight:"bold",
                   letterSpacing:2,textShadow:`0 0 16px ${col}60`,lineHeight:1.1}}>
                   {a.lv}
                 </div>
                 <div style={{color:col,fontFamily:"monospace",fontSize:10,opacity:0.8}}>{a.act}</div>
               </div>
+              {/* PEAK TODAY (only when worse than now) */}
+              {showPeak && (
+                <div style={{borderLeft:`1px solid ${peak.col}40`,paddingLeft:12}}>
+                  <div style={{color:"#1a4060",fontFamily:"monospace",fontSize:9,letterSpacing:1}}>↗ PEAK TODAY</div>
+                  <div style={{color:peak.col,fontFamily:"monospace",fontSize:isMob?20:24,fontWeight:"bold",
+                    letterSpacing:2,textShadow:`0 0 14px ${peak.col}60`,lineHeight:1.1}}>
+                    {peak.lv}
+                  </div>
+                  <div style={{color:peak.col,fontFamily:"monospace",fontSize:10,opacity:0.85}}>at {formatPeakTime(peakTime)} · {peak.prob}% prob</div>
+                </div>
+              )}
+              {/* Prob/STP — reflects current hour */}
               <div style={{borderLeft:`1px solid ${col}30`,paddingLeft:12}}>
                 <div style={{color:"#1a4060",fontFamily:"monospace",fontSize:9}}>TORNADO PROB</div>
                 <div style={{color:col,fontFamily:"monospace",fontSize:20,fontWeight:"bold"}}>{a.prob}<span style={{fontSize:11}}>%</span></div>
@@ -727,13 +796,13 @@ function App() {
               </div>
             </div>
             {!isMob&&(
-              <div style={{background:"#060c18",border:`1px solid ${col}30`,borderRadius:6,padding:"9px 12px",maxWidth:460,flex:1}}>
+              <div style={{background:"#060c18",border:`1px solid ${bannerCol}30`,borderRadius:6,padding:"9px 12px",maxWidth:460,flex:1}}>
                 <div style={{color:"#1a4060",fontFamily:"monospace",fontSize:9,marginBottom:4}}>AI ASSESSMENT</div>
-                <div style={{color:"#7a9ab0",fontFamily:"monospace",fontSize:10,lineHeight:1.6}}>{a.note}</div>
+                <div style={{color:"#7a9ab0",fontFamily:"monospace",fontSize:10,lineHeight:1.6}}>{assessment}</div>
               </div>
             )}
           </div>
-          {isMob&&<div style={{marginTop:9,color:"#5a7a90",fontFamily:"monospace",fontSize:10,lineHeight:1.6}}>{a.note}</div>}
+          {isMob&&<div style={{marginTop:9,color:"#5a7a90",fontFamily:"monospace",fontSize:10,lineHeight:1.6}}>{assessment}</div>}
         </div>
       )}
 
