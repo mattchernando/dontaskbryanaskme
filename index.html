@@ -599,7 +599,7 @@ function App() {
   const [apiOk,  setApiOk]  = useState({meteo:null, nws:null, radar:null});
   const [updated, setUpd]   = useState(null);
   const [loading, setLoad]  = useState(false);
-  const [radarData, setRadar] = useState({host:null,path:null});
+  const [radarData, setRadar] = useState({host:null, frames:[]});
   const [tab, setTab]       = useState("analysis");
   const width = useWidth();
   const isMob = width < 680;
@@ -640,16 +640,19 @@ function App() {
       console.warn("NWS failed:", e.message);
     }
 
-    // RainViewer Radar
+    // RainViewer Radar — assemble [LIVE, +10min, +20min, +30min] frame list
     let radarOk = false;
     try {
       const res = await fetch(RAINVIEWER_URL);
       if (!res.ok) throw new Error("HTTP " + res.status);
       const data = await res.json();
-      const past = data?.radar?.past;
-      if (past && past.length > 0) {
-        const latest = past[past.length - 1];
-        setRadar({ host: data.host || "https://tilecache.rainviewer.com", path: latest.path });
+      const past = data?.radar?.past || [];
+      const nowcast = data?.radar?.nowcast || [];
+      const frames = [];
+      if (past.length > 0) frames.push(past[past.length - 1]); // current "LIVE" frame
+      nowcast.forEach(f => frames.push(f));                    // 0–3 forecast frames (10-min steps, ≤30 min)
+      if (frames.length > 0) {
+        setRadar({ host: data.host || "https://tilecache.rainviewer.com", frames });
         radarOk = true;
       }
     } catch(e) {
@@ -863,6 +866,35 @@ function MapPanel({a, impact, col, mob, radarData}) {
   const atMin = zoom <= MIN_ZOOM;
   const visMi = Math.round(170 / (117 * zoom) * 69);
 
+  // ── Forecast frame animation ──
+  // radarData.frames = [LIVE, +10min, +20min, +30min] (some may be absent)
+  const frames = radarData?.frames || [];
+  const hasForecast = frames.length > 1;
+  const [frameIdx, setFrameIdx] = useState(0);
+  const [playing, setPlaying] = useState(true);
+  const safeIdx = frames.length > 0 ? Math.min(frameIdx, frames.length - 1) : 0;
+  const currentFrame = frames[safeIdx];
+
+  // Reset to LIVE whenever a fresh batch of frames arrives
+  useEffect(() => { setFrameIdx(0); }, [frames.length, frames[0]?.time]);
+
+  // Auto-advance through frames when playing (slight pause on the LIVE frame, faster through forecast)
+  useEffect(() => {
+    if (!playing || !hasForecast) return;
+    const dwell = safeIdx === 0 ? 1400 : 800; // hold LIVE longer
+    const t = setTimeout(() => {
+      setFrameIdx(i => (i + 1) % frames.length);
+    }, dwell);
+    return () => clearTimeout(t);
+  }, [playing, hasForecast, safeIdx, frames.length]);
+
+  // Plain-English label for current frame
+  const baseTime = frames[0]?.time;
+  const offsetMin = currentFrame && baseTime ? Math.round((currentFrame.time - baseTime) / 60) : 0;
+  const isLive = offsetMin <= 0;
+  const timeLabel = isLive ? "LIVE" : `IN ${offsetMin} MIN`;
+  const timeColor = isLive ? "#00cc66" : offsetMin >= 30 ? "#ff7733" : offsetMin >= 20 ? "#ff9933" : "#ffbb33";
+
   if (!a) return <div style={{background:"#03060e",border:`1px solid ${S.border}`,borderRadius:mob?0:8,display:"flex",alignItems:"center",justifyContent:"center",minHeight:280}}><span style={{color:"#1a3050",fontFamily:"monospace",fontSize:11}}>LOADING…</span></div>;
   const showCone = a.lv === "MODERATE" || a.lv === "HIGH" || a.lv === "EXTREME" || a.hasTW || a.hasTWa;
 
@@ -876,7 +908,7 @@ function MapPanel({a, impact, col, mob, radarData}) {
 
   return (
     <div style={{background:"#03060e",border:`1px solid ${a.hasTW?"#ff220050":S.border}`,borderRadius:mob?0:8,overflow:"hidden",position:"relative",minHeight:mob?280:360}}>
-      <RadarMap a={a} cities={impact} radarHost={radarData?.host} radarPath={radarData?.path} showCone={showCone} zoom={zoom}/>
+      <RadarMap a={a} cities={impact} radarHost={radarData?.host} radarPath={currentFrame?.path} showCone={showCone} zoom={zoom}/>
 
       {/* Zoom controls */}
       <div style={{position:"absolute",top:8,right:8,display:"flex",flexDirection:"column",gap:4}}>
@@ -891,17 +923,52 @@ function MapPanel({a, impact, col, mob, radarData}) {
         )}
       </div>
 
-      {/* Zoom level indicator */}
-      <div style={{position:"absolute",top:10,left:8,background:"rgba(3,6,14,0.85)",borderRadius:4,padding:"3px 7px",border:"1px solid #0a1a28"}}>
-        <span style={{color:"#1a4a60",fontFamily:"monospace",fontSize:9}}>{visMi} MI</span>
+      {/* Zoom level indicator + current frame time badge */}
+      <div style={{position:"absolute",top:10,left:8,display:"flex",gap:6,alignItems:"center"}}>
+        <div style={{background:"rgba(3,6,14,0.85)",borderRadius:4,padding:"3px 7px",border:"1px solid #0a1a28"}}>
+          <span style={{color:"#1a4a60",fontFamily:"monospace",fontSize:9}}>{visMi} MI</span>
+        </div>
+        {currentFrame && (
+          <div style={{background:"rgba(3,6,14,0.9)",borderRadius:4,padding:"3px 8px",border:`1px solid ${timeColor}80`}}>
+            <span style={{color:timeColor,fontFamily:"monospace",fontSize:10,fontWeight:"bold",letterSpacing:1}}>{timeLabel}</span>
+          </div>
+        )}
       </div>
+
+      {/* Forecast scrubber (only when nowcast frames available) */}
+      {hasForecast && (
+        <div style={{position:"absolute",bottom:30,left:8,right:8,background:"rgba(3,6,14,0.92)",borderRadius:5,padding:"6px 8px",border:`1px solid #0a1a28`,display:"flex",alignItems:"center",gap:8}}>
+          <button onClick={() => setPlaying(p => !p)}
+            style={{background:"rgba(10,24,48,0.6)",border:"1px solid #1a3a6a",color:"#4499cc",borderRadius:4,width:24,height:20,fontSize:11,cursor:"pointer",padding:0,lineHeight:1}}
+            title={playing ? "Pause animation" : "Play animation"}>
+            {playing ? "❚❚" : "▶"}
+          </button>
+          <div style={{display:"flex",gap:4,flex:1,alignItems:"center"}}>
+            {frames.map((f, i) => {
+              const fOffset = baseTime ? Math.round((f.time - baseTime) / 60) : 0;
+              const isCurrent = i === safeIdx;
+              const fColor = fOffset <= 0 ? "#00cc66" : fOffset >= 30 ? "#ff7733" : fOffset >= 20 ? "#ff9933" : "#ffbb33";
+              return (
+                <button key={i} onClick={() => { setPlaying(false); setFrameIdx(i); }}
+                  style={{flex:1,height:isCurrent?6:3,background:isCurrent?fColor:"#1a3050",border:"none",borderRadius:2,cursor:"pointer",padding:0,transition:"height 0.15s"}}
+                  title={fOffset <= 0 ? "Now (live radar)" : `Forecast: in ${fOffset} minutes`}/>
+              );
+            })}
+          </div>
+          <span style={{color:"#3a5a78",fontFamily:"monospace",fontSize:9,whiteSpace:"nowrap"}}>
+            {isLive ? "now" : `+${offsetMin}m`} of {Math.round((frames[frames.length-1].time - baseTime) / 60)}m
+          </span>
+        </div>
+      )}
 
       {/* Legend */}
       <div style={{position:"absolute",bottom:6,left:8,right:8,background:"rgba(3,6,14,0.92)",borderRadius:5,padding:"5px 8px",border:`1px solid #0a1a28`}}>
         <div style={{color:"#0a1e30",fontFamily:"monospace",fontSize:8}}>
           {showCone
-            ? "LIVE RADAR + AI TRACK · Bunkers RM projection · 🔴 Direct  🟠 High  🟡 Possible"
-            : "LIVE RADAR · RainViewer NEXRAD composite · Scroll zoom to adjust range"}
+            ? `${isLive ? "LIVE RADAR" : timeLabel + " FORECAST"} + AI TRACK · 🔴 Direct  🟠 High  🟡 Possible`
+            : hasForecast
+              ? `RAINVIEWER NEXRAD · LIVE → +${Math.round((frames[frames.length-1].time - baseTime) / 60)} MIN FORECAST · click bars to scrub`
+              : "LIVE RADAR · RainViewer NEXRAD · No forecast frames available right now"}
         </div>
       </div>
     </div>
