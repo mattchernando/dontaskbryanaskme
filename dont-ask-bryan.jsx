@@ -579,6 +579,17 @@ export default function App() {
   const bannerBg   = a ? (showPeak ? peak.bg : a.bg) : "rgba(0,0,0,0)";
   const assessment = a ? buildAssessment(a, peak, peakTime) : "";
 
+  // Dynamic refresh cadence — 60s during severe weather, 5 min during calm.
+  // "Severe" = any NWS alert flagged Severe or Extreme, OR our threat analysis at HIGH/EXTREME.
+  const severeMode = (
+    aAlerts.some(al => {
+      const sev = (al.properties?.severity || "").toLowerCase();
+      return sev === "extreme" || sev === "severe";
+    }) ||
+    (a && (a.lv === "HIGH" || a.lv === "EXTREME"))
+  );
+  const refreshMs = severeMode ? 60 * 1000 : 5 * 60 * 1000;
+
   const fetchAll = useCallback(async () => {
     setLoad(true);
     let meteoOk = false, nwsOk = false;
@@ -634,9 +645,9 @@ export default function App() {
 
   useEffect(() => {
     fetchAll();
-    const iv = setInterval(fetchAll, 5 * 60 * 1000);
+    const iv = setInterval(fetchAll, refreshMs);
     return () => clearInterval(iv);
-  }, [fetchAll]);
+  }, [fetchAll, refreshMs]);
 
   const isDemo = wx && wx._isDemo;
 
@@ -673,6 +684,17 @@ export default function App() {
         </div>
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           {updated&&<span style={{color:"#0d2535",fontFamily:"monospace",fontSize:9}}>{updated.toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"})}</span>}
+          {/* Auto-refresh cadence indicator — orange + pulse when severe weather is active */}
+          <span style={{
+            color: severeMode ? "#ff7700" : "#1a4060",
+            fontFamily:"monospace", fontSize:9, fontWeight: severeMode ? "bold" : "normal",
+            padding:"2px 6px", borderRadius:3, letterSpacing:0.5,
+            border:`1px solid ${severeMode ? "#ff770080" : "#1a306060"}`,
+            background: severeMode ? "rgba(255,119,0,0.08)" : "transparent",
+            animation: severeMode ? "pulse 2s ease-in-out infinite" : "none"
+          }} title={severeMode ? "Severe weather active — refreshing every 60 seconds" : "Calm conditions — refreshing every 5 minutes"}>
+            {severeMode ? "⚡ FAST 60s" : "↻ AUTO 5m"}
+          </span>
           <button onClick={fetchAll} disabled={loading}
             style={{background:"#0a1830",border:"1px solid #1a3a6a",color:loading?"#1a3a6a":"#2a7acc",
               borderRadius:5,padding:"6px 14px",fontFamily:"monospace",fontSize:11,cursor:loading?"wait":"pointer",minHeight:34}}>
