@@ -324,8 +324,9 @@ function RadarMap({a, cities, radarHost, radarPath, showCone, zoom}) {
   const toX = lon => (lon - LON) * PO;
   const toY = lat => -(lat - LAT) * PL;
 
-  // Tile zoom scales with map zoom for appropriate resolution
-  const TZOOM = Math.min(10, Math.max(6, Math.round(8 + Math.log2(zoom))));
+  // Tile zoom scales with map zoom. RainViewer radar tiles top out at z=7;
+  // anything higher returns the "Zoom Level Not Supported" placeholder.
+  const TZOOM = Math.min(7, Math.max(5, Math.round(6 + Math.log2(zoom))));
 
   // ── Tile math ──
   const lon2tile = (ln, z) => Math.floor((ln + 180) / 360 * (1 << z));
