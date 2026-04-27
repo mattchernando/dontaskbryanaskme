@@ -1009,35 +1009,120 @@ function CitiesPanel({impact, a, mob}) {
   );
 }
 
+// ── Alert classification helpers ─────────────────────────────────────────────
+// Color by NWS severity field, with tornado-event overrides for emphasis.
+function alertColor(p) {
+  const e = (p?.event || "").toLowerCase();
+  if (e.includes("tornado emergency")) return "#ff0000";
+  if (e.includes("tornado warning"))   return "#ff2200";
+  if (e.includes("tornado watch"))     return "#ff7700";
+  switch ((p?.severity || "").toLowerCase()) {
+    case "extreme":  return "#ff2200";
+    case "severe":   return "#ff7700";
+    case "moderate": return "#ffcc00";
+    case "minor":    return "#4488cc";
+    default:         return "#5a7a9a";
+  }
+}
+// Pick an icon based on the event type so non-meteorologists can scan the list visually.
+function alertIcon(event) {
+  const e = (event || "").toLowerCase();
+  if (e.includes("tornado"))                                                     return "🌪";
+  if (e.includes("severe thunderstorm") || e.includes("severe weather"))         return "⛈";
+  if (e.includes("thunderstorm"))                                                return "🌩";
+  if (e.includes("flash flood"))                                                 return "🌊";
+  if (e.includes("flood"))                                                       return "💧";
+  if (e.includes("hurricane") || e.includes("tropical"))                         return "🌀";
+  if (e.includes("blizzard") || e.includes("ice storm") || e.includes("winter")) return "❄️";
+  if (e.includes("snow") || e.includes("freezing"))                              return "🌨";
+  if (e.includes("freeze") || e.includes("frost"))                               return "🥶";
+  if (e.includes("excessive heat") || e.includes("heat"))                        return "🔥";
+  if (e.includes("wind") || e.includes("dust"))                                  return "💨";
+  if (e.includes("fire") || e.includes("red flag"))                              return "🔥";
+  if (e.includes("fog"))                                                         return "🌫";
+  if (e.includes("special weather"))                                             return "📢";
+  return "⚠️";
+}
+// Sort: most-severe first; tornado-related events float to the top within their tier.
+const SEV_RANK = { extreme: 0, severe: 1, moderate: 2, minor: 3 };
+function severityRank(s) { return SEV_RANK[(s || "").toLowerCase()] ?? 4; }
+
 function AlertsPanel({alerts, loading, mob}) {
+  // Sort by severity, then bring tornado-related events to the top within tier
+  const sorted = [...(alerts || [])].sort((a, b) => {
+    const sa = severityRank(a.properties?.severity);
+    const sb = severityRank(b.properties?.severity);
+    if (sa !== sb) return sa - sb;
+    const ea = (a.properties?.event || "").toLowerCase();
+    const eb = (b.properties?.event || "").toLowerCase();
+    return (eb.includes("tornado") ? 1 : 0) - (ea.includes("tornado") ? 1 : 0);
+  });
+  // Severity counts for the header summary
+  const counts = sorted.reduce((acc, al) => {
+    const k = (al.properties?.severity || "Unknown");
+    acc[k] = (acc[k] || 0) + 1;
+    return acc;
+  }, {});
+  const sevOrder = ["Extreme","Severe","Moderate","Minor","Unknown"];
+  const sevCol = { Extreme:"#ff2200", Severe:"#ff7700", Moderate:"#ffcc00", Minor:"#4488cc", Unknown:"#5a7a9a" };
+
   return (
     <div style={{background:S.bg,border:`1px solid ${S.border}`,borderRadius:mob?0:8,padding:"11px 12px"}}>
       {!mob&&<div style={{color:"#1a3a5a",fontFamily:"monospace",fontSize:9,letterSpacing:1,marginBottom:9,display:"flex",justifyContent:"space-between"}}>
         <span>NWS ACTIVE ALERTS — ST. LOUIS COUNTY</span>
-        {alerts.length>0&&<span style={{color:"#ff7700",fontWeight:"bold"}}>{alerts.length} ACTIVE</span>}
+        {sorted.length>0&&<span style={{color:"#ff7700",fontWeight:"bold"}}>{sorted.length} ACTIVE</span>}
       </div>}
+      {/* Severity summary chips */}
+      {sorted.length > 0 && (
+        <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
+          {sevOrder.filter(k => counts[k]).map(k => (
+            <span key={k} style={{color:sevCol[k],fontFamily:"monospace",fontSize:9,padding:"2px 6px",border:`1px solid ${sevCol[k]}50`,borderRadius:3}}>
+              {counts[k]} {k.toUpperCase()}
+            </span>
+          ))}
+        </div>
+      )}
       <div style={{maxHeight:mob?320:340,overflowY:"auto"}}>
         {loading?(
           <div style={{color:"#1a3050",fontFamily:"monospace",fontSize:10,padding:20,textAlign:"center"}}>FETCHING NWS…</div>
-        ):alerts.length===0?(
+        ):sorted.length===0?(
           <div style={{background:"#05100a",border:"1px solid #0d2a1a",borderRadius:7,padding:"14px",textAlign:"center"}}>
             <div style={{color:"#00dd66",fontFamily:"monospace",fontSize:13,marginBottom:5}}>✓ ALL CLEAR</div>
             <div style={{color:"#0d2a18",fontFamily:"monospace",fontSize:10}}>No active NWS alerts for St. Louis County.</div>
           </div>
-        ):alerts.map((al,i)=>{
-          const p=al.properties;
-          const isTW=p.event?.toLowerCase().includes("tornado warning");
-          const isTWa=p.event?.toLowerCase().includes("tornado watch");
-          const isST=p.event?.toLowerCase().includes("severe");
-          const c=isTW?"#ff2200":isTWa?"#ff7700":isST?"#ffcc00":"#4488cc";
+        ):sorted.map((al,i)=>{
+          const p = al.properties || {};
+          const c = alertColor(p);
+          const icon = alertIcon(p.event);
+          const sev = (p.severity || "").toUpperCase();
+          const urg = (p.urgency || "");
+          const isImmediate = urg.toLowerCase() === "immediate";
           return (
             <div key={i} style={{border:`1px solid ${c}70`,borderLeft:`3px solid ${c}`,background:c+"10",borderRadius:6,padding:"9px 11px",marginBottom:7}}>
-              <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
-                <span style={{color:c,fontFamily:"monospace",fontSize:11,fontWeight:"bold"}}>{(p.event||"").toUpperCase()}</span>
-                <span style={{color:"#2a4060",fontFamily:"monospace",fontSize:9}}>
+              <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:4}}>
+                <span style={{fontSize:14,lineHeight:1}}>{icon}</span>
+                <span style={{color:c,fontFamily:"monospace",fontSize:11,fontWeight:"bold",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  {(p.event||"").toUpperCase()}
+                </span>
+                <span style={{color:"#2a4060",fontFamily:"monospace",fontSize:9,whiteSpace:"nowrap"}}>
                   {p.expires?"EXP "+new Date(p.expires).toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}):""}
                 </span>
               </div>
+              {(sev || urg) && (
+                <div style={{display:"flex",gap:5,marginBottom:5,flexWrap:"wrap"}}>
+                  {sev && sev !== "UNKNOWN" && (
+                    <span style={{color:c,fontFamily:"monospace",fontSize:8,padding:"1px 5px",border:`1px solid ${c}60`,borderRadius:3,letterSpacing:0.5}}>{sev}</span>
+                  )}
+                  {urg && urg.toLowerCase() !== "unknown" && (
+                    <span style={{color:isImmediate?"#ff4422":"#5a7a9a",fontFamily:"monospace",fontSize:8,padding:"1px 5px",border:`1px solid ${isImmediate?"#ff442260":"#1a3050"}`,borderRadius:3,letterSpacing:0.5}}>{urg.toUpperCase()}</span>
+                  )}
+                  {p.areaDesc && (
+                    <span style={{color:"#4a6a88",fontFamily:"monospace",fontSize:8,padding:"1px 5px",border:"1px solid #1a3050",borderRadius:3,maxWidth:240,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={p.areaDesc}>
+                      {p.areaDesc.length > 32 ? p.areaDesc.slice(0,32)+"…" : p.areaDesc}
+                    </span>
+                  )}
+                </div>
+              )}
               <div style={{color:"#5a7a9a",fontFamily:"monospace",fontSize:10,lineHeight:1.5}}>
                 {p.headline||(p.description||"").slice(0,110)+"…"}
               </div>
@@ -1045,7 +1130,7 @@ function AlertsPanel({alerts, loading, mob}) {
           );
         })}
       </div>
-      <div style={{marginTop:8,color:"#0d1e2e",fontFamily:"monospace",fontSize:8}}>api.weather.gov/alerts · {alerts.length===0&&!loading?"No active alerts":"Live"}</div>
+      <div style={{marginTop:8,color:"#0d1e2e",fontFamily:"monospace",fontSize:8}}>api.weather.gov/alerts · sorted by severity · {sorted.length===0&&!loading?"no active alerts":"live"}</div>
     </div>
   );
 }
