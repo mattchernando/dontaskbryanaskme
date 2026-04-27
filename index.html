@@ -533,14 +533,6 @@ function RadarMap({a, cities, radarHost, radarPath, showCone, zoom}) {
         });
       })()}
 
-      {/* Header labels */}
-      <text x="-195" y="-158" fill="#1a3a55" fontSize="6" fontFamily="monospace" filter="url(#labelShadow)">
-        {visMi}-MI LIVE RADAR {showCone ? "• AI TRACK OVERLAY" : "• CLEAR CONDITIONS"}
-      </text>
-      <text x="-195" y="-148" fill={showCone ? col : "#1a4a60"} fontSize="5.5" fontFamily="monospace" filter="url(#labelShadow)">
-        {showCone ? `MOTION: ${compass(a.stDir)} @ ${a.stSpd} MPH` : "NO SEVERE TRACK — MONITORING"}
-      </text>
-
       {/* State labels — only when they're visible */}
       {visMi >= 60 && <text x={toX(-91.5)} y={toY(38.0)} fill="#0d2040" fontSize="8" fontFamily="monospace" opacity="0.3">MO</text>}
       {visMi >= 60 && <text x={toX(-89.5)} y={toY(39.3)} fill="#0d2040" fontSize="8" fontFamily="monospace" opacity="0.3">IL</text>}
