@@ -771,9 +771,16 @@ function AnalPanel({a, mob}) {
 }
 
 function MapPanel({a, impact, col, mob, radarData}) {
+  // RainViewer radar tiles cap at z=7. With our TZOOM formula
+  // (round(6 + log2(zoom))), TZOOM hits 7 at map zoom ~1.5x.
+  // Zooming further just stretches pixels with no real resolution gain,
+  // so we cap here.
+  const MAX_ZOOM = 1.5, MIN_ZOOM = 0.35;
   const [zoom, setZoom] = useState(1.0);
-  const zoomIn  = () => setZoom(z => Math.min(2.5, +(z * 1.4).toFixed(2)));
-  const zoomOut = () => setZoom(z => Math.max(0.35, +(z / 1.4).toFixed(2)));
+  const zoomIn  = () => setZoom(z => Math.min(MAX_ZOOM, +(z * 1.4).toFixed(2)));
+  const zoomOut = () => setZoom(z => Math.max(MIN_ZOOM, +(z / 1.4).toFixed(2)));
+  const atMax = zoom >= MAX_ZOOM;
+  const atMin = zoom <= MIN_ZOOM;
   const visMi = Math.round(170 / (117 * zoom) * 69);
 
   if (!a) return <div style={{background:"#03060e",border:`1px solid ${S.border}`,borderRadius:mob?0:8,display:"flex",alignItems:"center",justifyContent:"center",minHeight:280}}><span style={{color:"#1a3050",fontFamily:"monospace",fontSize:11}}>LOADING…</span></div>;
@@ -785,6 +792,7 @@ function MapPanel({a, impact, col, mob, radarData}) {
     cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",
     backdropFilter:"blur(4px)",
   };
+  const disabledStyle = { opacity: 0.35, cursor: "not-allowed", color: "#2a4060" };
 
   return (
     <div style={{background:"#03060e",border:`1px solid ${a.hasTW?"#ff220050":S.border}`,borderRadius:mob?0:8,overflow:"hidden",position:"relative",minHeight:mob?280:360}}>
@@ -792,8 +800,12 @@ function MapPanel({a, impact, col, mob, radarData}) {
 
       {/* Zoom controls */}
       <div style={{position:"absolute",top:8,right:8,display:"flex",flexDirection:"column",gap:4}}>
-        <button onClick={zoomIn} style={btnStyle} title="Zoom in">+</button>
-        <button onClick={zoomOut} style={btnStyle} title="Zoom out">−</button>
+        <button onClick={zoomIn} disabled={atMax}
+          style={atMax ? {...btnStyle, ...disabledStyle} : btnStyle}
+          title={atMax ? "Max zoom — radar resolution limit" : "Zoom in"}>+</button>
+        <button onClick={zoomOut} disabled={atMin}
+          style={atMin ? {...btnStyle, ...disabledStyle} : btnStyle}
+          title={atMin ? "Min zoom" : "Zoom out"}>−</button>
         {zoom !== 1.0 && (
           <button onClick={() => setZoom(1.0)} style={{...btnStyle,fontSize:9,color:"#2a6080"}} title="Reset zoom">RST</button>
         )}
