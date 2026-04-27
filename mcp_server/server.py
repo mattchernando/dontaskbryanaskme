@@ -286,10 +286,34 @@ async def force_refresh() -> dict:
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 def main() -> None:
-    """Run the server with SSE transport so a remote Claude Desktop can connect over LAN."""
+    """Run the server with SSE transport, configured for LAN access.
+
+    We bypass FastMCP's high-level `mcp.run("sse")` because it uses uvicorn's
+    default config, which rejects requests whose Host header doesn't match the
+    bound interface — that breaks LAN access from a client like Claude Desktop
+    on a different machine. We mount the same app manually with permissive
+    settings.
+    """
+    import asyncio
+    import uvicorn
+
+    starlette_app = mcp.sse_app()
+
     print(f"[dontaskbryan-mcp] Starting on http://{HOST}:{PORT} (SSE transport)")
     print(f"[dontaskbryan-mcp] Connect Claude Desktop with URL: http://<pi-host>:{PORT}/sse")
-    mcp.run(transport="sse")
+
+    config = uvicorn.Config(
+        starlette_app,
+        host=HOST,
+        port=PORT,
+        log_level="info",
+        # Allow proxy / LAN clients to set Host headers — uvicorn's default rejects
+        # them with 421 Misdirected Request, which breaks remote Claude Desktop access.
+        forwarded_allow_ips="*",
+        proxy_headers=True,
+    )
+    server = uvicorn.Server(config)
+    asyncio.run(server.serve())
 
 
 if __name__ == "__main__":
