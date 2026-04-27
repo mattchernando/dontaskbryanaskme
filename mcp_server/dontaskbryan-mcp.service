@@ -1,0 +1,19 @@
+[Unit]
+Description=Don't Ask Bryan — MCP weather server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/dontaskbryanaskme
+Environment="DONTASKBRYAN_MCP_HOST=0.0.0.0"
+Environment="DONTASKBRYAN_MCP_PORT=8765"
+ExecStart=/home/pi/dontaskbryanaskme/mcp_server/.venv/bin/python -m mcp_server.server
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
